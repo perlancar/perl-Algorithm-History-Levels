@@ -133,11 +133,11 @@ _
             schema => 'int*',
         },
         discard_old_histories => {
-            schema => ['bool*', is=>1],
+            schema => ['bool*'],
             default => 0,
         },
         discard_young_histories => {
-            schema => ['bool*', is=>1],
+            schema => ['bool*'],
             default => 0,
         },
     },
