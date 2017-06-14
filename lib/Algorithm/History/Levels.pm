@@ -29,7 +29,7 @@ $SPEC{group_histories_into_levels} = {
     summary => 'Group histories into levels',
     description => <<'_',
 
-This routine can group a single, linear histories into levels. This is be better
+This routine can group a single, linear histories into levels. This is better
 explained by an example. Suppose you produce daily database backups. Your backup
 files are named:
 
