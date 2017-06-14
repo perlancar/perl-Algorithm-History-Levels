@@ -7,8 +7,6 @@ use 5.010001;
 use strict;
 use warnings;
 
-use POSIX qw(round);
-
 use Exporter qw(import);
 our @EXPORT_OK = qw(group_histories_into_levels);
 
@@ -24,25 +22,6 @@ sub _pick_history {
         }
     }
     undef;
-}
-
-sub _sample {
-    my ($ary, $n) = @_;
-    #say "D: sampling $n";
-    return [] if $n < 1 || !@$ary;
-    return @$ary if $n >= @$ary;
-    my $delta = @$ary / $n+1;
-    my @res;
-    my $prev_idx;
-    for my $j (1 .. $n+1) {
-        my $idx = round($j * ($#$ary / ($n+1)));
-        #say "D:idx=$idx";
-        next if defined($prev_idx) && $idx == $prev_idx;
-        push @res, $ary->[$idx];
-        $prev_idx = $idx;
-        last if @res >= $n;
-    }
-    @res;
 }
 
 $SPEC{group_histories_into_levels} = {
@@ -165,6 +144,8 @@ _
     result_naked => 1,
 };
 sub group_histories_into_levels {
+    require Array::Sample::Partition;
+
     my %args = @_;
 
     my $now = $args{now} // time();
@@ -206,7 +187,7 @@ sub group_histories_into_levels {
     @histories = sort { $b->[1] <=> $a->[1] } @histories;
 
     my $res = {
-        levels => [],
+        levels => [ map {[]} @$levels],
         discard => [],
     };
 
@@ -254,12 +235,20 @@ sub group_histories_into_levels {
                 @filler = grep { $_->[1] >= $time }
                     @filler;
             }
-            my @sample = _sample(\@filler, $num_per_level - $num_filled);
-            use DD; dd \@sample;
+            my @sample = Array::Sample::Partition::sample_partition(
+                \@filler, $num_per_level - $num_filled);
             $res->{levels}[$l] = [
-                sort { $b->[1] <=> $b->[0] }
+                sort { $b->[1] <=> $a->[1] }
                     (@{ $res->{levels}[$l] }, @sample),
             ];
+            for my $i (reverse 0..$#histories) {
+                for my $j (0..$#sample) {
+                    if ($histories[$i] eq $sample[$j]) {
+                        splice @histories, $i, 1;
+                        last;
+                    }
+                }
+            }
         }
 
         # only return names

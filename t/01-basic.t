@@ -3,64 +3,142 @@
 use 5.010;
 use strict;
 use warnings;
-
-use Cwd qw(abs_path);
-use File::chdir;
-use File::Slurp::Tiny qw(write_file);
-use File::Spec;
+use Test::Exception;
 use Test::More 0.98;
 
-use File::Temp qw(tempdir);
-use File::Flock::Retry;
+use Algorithm::History::Levels qw(group_histories_into_levels);
 
-plan skip_all => 'Not tested on Windows yet' if $^O =~ /win32/i;
+subtest "argument checks" => sub {
+    dies_ok { group_histories_into_levels(levels=>[[86400,7]]) }
+        "histories arg required";
+    dies_ok { group_histories_into_levels(levels=>[[86400,7]], histories=>[1,2,1]) }
+        "names must be unique (1)";
+    dies_ok { group_histories_into_levels(levels=>[[86400,7]], histories=>[[1,1], [2,2], [1,3]]) }
+        "names must be unique (2)";
 
-my $dir = abs_path(tempdir(CLEANUP=>1));
-$CWD = $dir;
-
-subtest "create (unlocked)" => sub {
-    ok(!(-f "f1"), "f1 doesn't exist before lock");
-    my $lock = File::Flock::Retry->lock("f1");
-    ok((-f "f1"), "f1 exists after lock");
-    $lock->unlock;
-    ok(!(-f "f1"), "f1 doesn't exist after unlock");
+    dies_ok { group_histories_into_levels(histories=>[]) }
+        "levels arg required";
+    dies_ok { group_histories_into_levels(histories=>[], levels=>[]) }
+        "there must be at least 1 level";
+    dies_ok { group_histories_into_levels(histories=>[], levels=>[[1]]) }
+        "each level must be a 2-element array";
+    dies_ok { group_histories_into_levels(histories=>[], levels=>[[100,3],[90,2]]) }
+        "period must be monotonically increasing";
 };
 
-subtest "create (destroyed)" => sub {
-    ok(!(-f "f1"), "f1 doesn't exist before lock");
-    my $lock = File::Flock::Retry->lock("f1");
-    ok((-f "f1"), "f1 exists after lock");
-    undef $lock;
-    ok(!(-f "f1"), "f1 doesn't exist after DESTROY");
-};
+subtest "basics" => sub {
+    my $now = time();
+    is_deeply(
+        group_histories_into_levels(
+            histories=>[map {$now-$_*86400} 0..15],
+            levels=>[[86400,7], [7*86400,4]],
+        ),
+        {
+            levels => [
+                [map {$now-$_*86400} 0..6],
+                [map {$now-$_*86400} 7, 10, 12, 14],
+            ],
+            discard => [
+                map {$now-$_*86400} 8, 9, 11, 13, 15
+            ],
+        },
+        'histories as array of timestamps',
+    );
 
-subtest "already exists" => sub {
-    write_file("f1", "");
-    ok((-f "f1"), "f1 exists before lock");
-    my $lock = File::Flock::Retry->lock("f1");
-    ok((-f "f1"), "f1 exists after lock");
-    undef $lock;
-    ok((-f "f1"), "f1 still exists after DESTROY");
-    unlink "f1";
-};
+    is_deeply(
+        group_histories_into_levels(
+            histories=>[map {[$_,$now-$_*86400]} 0..15],
+            levels=>[[86400,7], [7*86400,4], [30*86400,3]],
+        ),
+        {
+            levels => [
+                [0..6],
+                [7, 10, 12, 14],
+                [9, 11, 13],
+            ],
+            discard => [
+                8, 15,
+            ],
+        },
+        'histories as array of [name,timestamp] pairs',
+    );
 
-subtest "was created, but not empty" => sub {
-    ok(!(-f "f1"), "f1 doesn't exist before lock");
-    my $lock = File::Flock::Retry->lock("f1");
-    ok((-f "f1"), "f1 exists after lock");
-    { open my $f1, ">>", "f1"; print $f1 "a"; close $f1 }
-    undef $lock;
-    ok((-f "f1"), "f1 still exists after DESTROY");
-};
+    is_deeply(
+        group_histories_into_levels(
+            histories=>[map {[$_,$now-$_*86400]} 0, map {$_+1} 0..6, 7,10,12,14, 9,11,13],
+            levels=>[[86400,7], [7*86400,4], [30*86400,3]],
+        ),
+        {
+            levels => [
+                [0..6],
+                [7, 11, 13, 14],
+                [10, 12, 15],
+            ],
+            discard => [
+                8,
+            ],
+        },
+        'day 2',
+    );
 
-# XXX test shared lock
+    is_deeply(
+        group_histories_into_levels(
+            histories=>[map {[$_,$now-$_*86400]} 0..15],
+            levels=>[[86400,7], [7*86400,4], [30*86400,3]],
+            discard_young_histories => 1,
+        ),
+        {
+            levels => [
+                [0..6],
+                [7, 14],
+                [],
+            ],
+            discard => [
+                8..13, 15,
+            ],
+        },
+        "opt:discard_young_histories=1",
+    );
+
+    is_deeply(
+        group_histories_into_levels(
+            histories=>[map {[$_,$now-$_*86400]} 0..15, 200],
+            levels=>[[86400,7], [7*86400,4], [30*86400,3]],
+            discard_old_histories => 1,
+        ),
+        {
+            levels => [
+                [0..6],
+                [7, 10, 12, 14],
+                [9, 11, 13],
+            ],
+            discard => [
+                8, 15, 200,
+            ],
+        },
+        "opt:discard_old_histories=1",
+    );
+
+    is_deeply(
+        group_histories_into_levels(
+            histories=>[map {[$_,$now-$_*86400]} 0..15, 200],
+            levels=>[[86400,7], [7*86400,4], [30*86400,3]],
+            discard_young_histories => 1,
+            discard_old_histories => 1,
+        ),
+        {
+            levels => [
+                [0..6],
+                [7, 14],
+                [],
+            ],
+            discard => [
+                8..13, 15, 200,
+            ],
+        },
+        "opt:discard_young_histories=1,discard_old_histories=1",
+    );
+};
 
 DONE_TESTING:
-done_testing();
-if (Test::More->builder->is_passing) {
-    diag "all tests successful, deleting test data dir";
-    $CWD = "/";
-} else {
-    # don't delete test data dir if there are errors
-    diag "there are failing tests, not deleting test data dir $dir";
-}
+done_testing;
